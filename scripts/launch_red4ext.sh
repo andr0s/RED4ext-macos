@@ -43,12 +43,16 @@ DB="$RED4EXT_DIR/bin/x64/cyberpunk2077_addresses.json"
 IGNORED=$(awk '/^ignored *=/{f=1} f{print} f&&/\]/{exit}' "$RED4EXT_DIR/config.ini" 2>/dev/null | grep -o '"[^"]*"' | tr -d '"' || true)
 # When the launcher exits (after the game, or on a compile failure), take the plugin scripts out again and recompile. Otherwise a later launch from Steam (without
 # RED4ext) would load scripts that declare natives of plugins that are not loaded and stop at script initialization.
+CACHE="$SCRIPT_DIR/r6/cache"
 cleanup() {
     rm -rf "$STAGE"
-    # Back to the game's own script bundle (scc's backup of it) for launches from Steam. Recompiling r6/scripts here
-    # fails, with an error dialog, as soon as a mod in it needs a plugin's scripts, and then leaves this same bundle.
-    if [[ -f "$SCRIPT_DIR/r6/cache/final.redscripts.bk" ]]; then
-        cp -f "$SCRIPT_DIR/r6/cache/final.redscripts.bk" "$SCRIPT_DIR/r6/cache/final.redscripts" || true
+    # Back to the game's own script bundle for launches from Steam: the copy kept below (patch 2.5 and later), or else
+    # scc's backup of it. Recompiling r6/scripts here fails, with an error dialog, as soon as a mod in it needs a
+    # plugin's scripts, and then leaves this same bundle.
+    if [[ -f "$CACHE/final.redscripts.game" ]]; then
+        cp -f "$CACHE/final.redscripts.game" "$CACHE/final.redscripts" || true
+    elif [[ -f "$CACHE/final.redscripts.bk" ]]; then
+        cp -f "$CACHE/final.redscripts.bk" "$CACHE/final.redscripts" || true
     fi
 }
 trap cleanup EXIT
@@ -67,6 +71,25 @@ for dir in "$RED4EXT_DIR"/plugins/*/; do
     fi
     mkdir -p "$STAGE" && cp -R "$dir/Scripts" "$STAGE/$name"
 done
+# Since patch 2.5 the game writes its script bundle with header flag 0x2 and an extra table, which the scc that ships
+# with the macOS game cannot read (it stops at a "backup has been corrupted" dialog). The game's own bundle is kept as
+# final.redscripts.game (restored on exit) and scc gets it in the layout it reads as its base, final.redscripts.bk
+# (redscripts_pre25.pl; the game loads both layouts). Without scc's timestamp file scc takes that base as it is.
+bundle_has_flag2() {
+    perl -e 'open F,"<",$ARGV[0] or exit 1; binmode F; read F,$h,12; ($m,$v,$f)=unpack("V3",$h);
+        exit(($m==0x53444552 && ($f & 2)) ? 0 : 1)' "$1"
+}
+PRE25="$RED4EXT_DIR/macos/scripts/redscripts_pre25.pl"
+if bundle_has_flag2 "$CACHE/final.redscripts"; then
+    cp -p "$CACHE/final.redscripts" "$CACHE/final.redscripts.game"
+    perl "$PRE25" "$CACHE/final.redscripts" "$CACHE/final.redscripts.bk"
+    rm -f "$CACHE/final.redscripts.ts"
+elif [[ -f "$CACHE/final.redscripts.bk" ]] && bundle_has_flag2 "$CACHE/final.redscripts.bk"; then
+    cp -p "$CACHE/final.redscripts.bk" "$CACHE/final.redscripts.game"
+    perl "$PRE25" "$CACHE/final.redscripts.bk" "$CACHE/final.redscripts.bk"
+    rm -f "$CACHE/final.redscripts.ts"
+fi
+
 if [[ -x "$SCRIPT_DIR/engine/tools/scc" ]]; then
     SCC_OUT=$("$SCRIPT_DIR/engine/tools/scc" -compile "$SCRIPT_DIR/r6/scripts" 2>&1 || true)
     echo "$SCC_OUT" | tail -3
